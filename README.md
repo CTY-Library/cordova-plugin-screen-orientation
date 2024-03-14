@@ -47,6 +47,8 @@ The plugin adds the following to the screen object (`window.screen`):
 cordova plugin add cordova-plugin-screen-orientation
 ```
 
+#注意:ionic 项目的配置文件 config.xml 删除  preference name="orientation" value="portrait" 
+
 ## Supported Orientations
 
 #### portrait-primary
