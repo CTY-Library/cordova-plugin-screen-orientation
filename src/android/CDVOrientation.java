@@ -28,8 +28,18 @@ import org.json.JSONArray;
 import org.json.JSONException;
 
 import android.app.Activity;
+import android.os.Build;
 import android.content.pm.ActivityInfo;
+import android.graphics.Color;
 import android.util.Log;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
+import androidx.core.view.OnApplyWindowInsetsListener;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 public class CDVOrientation extends CordovaPlugin {
     
@@ -46,6 +56,7 @@ public class CDVOrientation extends CordovaPlugin {
     private static final String LANDSCAPE_SECONDARY = "landscape-secondary";
     private static final String PORTRAIT = "portrait";
     private static final String LANDSCAPE = "landscape";
+    private boolean forceFullscreen;
     
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -72,27 +83,211 @@ public class CDVOrientation extends CordovaPlugin {
         
         Log.d(TAG, "Requested ScreenOrientation: " + orientation);
         
-        Activity activity = cordova.getActivity();
-        
+        final Activity activity = cordova.getActivity();
+        final int requestedOrientation;
+        final boolean shouldFullscreen;
+
         if (orientation.equals(ANY)) {
-            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+            shouldFullscreen = true;
         } else if (orientation.equals(LANDSCAPE_PRIMARY)) {
-            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+            shouldFullscreen = true;
         } else if (orientation.equals(PORTRAIT_PRIMARY)) {
-            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+            shouldFullscreen = true;
         } else if (orientation.equals(LANDSCAPE)) {
-            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+            shouldFullscreen = true;
         } else if (orientation.equals(PORTRAIT)) {
-            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+            shouldFullscreen = true;
         } else if (orientation.equals(LANDSCAPE_SECONDARY)) {
-            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE);
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
+            shouldFullscreen = true;
         } else if (orientation.equals(PORTRAIT_SECONDARY)) {
-            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT);
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
+            shouldFullscreen = true;
+        } else {
+            callbackContext.error("orientation not recognised");
+            return false;
         }
+
+        activity.runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                forceFullscreen = shouldFullscreen;
+                activity.setRequestedOrientation(requestedOrientation);
+                setFullscreen(activity, shouldFullscreen);
+                reapplyFullscreenAfterRotation(activity);
+            }
+        });
         
         callbackContext.success();
         return true;
+    }
+
+    private void setFullscreen(Activity activity, boolean fullscreen) {
+        final Window window = activity.getWindow();
+        if (window == null) {
+            return;
+        }
+
+        final View decorView = window.getDecorView();
+        int uiOptions = (decorView != null) ? decorView.getSystemUiVisibility() : 0;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+
+            if (fullscreen) {
+                // 全屏模式：内容进入状态栏/刘海区域
+                window.setStatusBarColor(Color.TRANSPARENT);
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                WindowCompat.setDecorFitsSystemWindows(window, false);
+                setStatusBarViewVisible(false);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    try {
+                        WindowManager.LayoutParams lp = window.getAttributes();
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                        window.setAttributes(lp);
+                    } catch (Exception e) {
+                        Log.w("CDVOrientation", "Failed to set layoutInDisplayCutoutMode", e);
+                    }
+                }
+                
+                // 隐藏导航栏
+                uiOptions |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+            } else {
+                // 非全屏模式：内容回到状态栏下方
+                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                WindowCompat.setDecorFitsSystemWindows(window, true);
+                setStatusBarViewVisible(true);
+
+                window.setStatusBarColor(Color.BLACK);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    try {
+                        WindowManager.LayoutParams lp = window.getAttributes();
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+                        window.setAttributes(lp);
+                    } catch (Exception e) {
+                        Log.w("CDVOrientation", "Failed to restore layoutInDisplayCutoutMode", e);
+                    }
+                }
+            }
+        }
+
+        if (decorView != null) {
+            decorView.setSystemUiVisibility(uiOptions);
+        }
+
+        consumeInsetsForFullscreen(activity, fullscreen);
+
+        // 处理状态栏文字颜色
+        if (Build.VERSION.SDK_INT >= 30 && decorView != null) {
+            final WindowInsetsControllerCompat insetsController =
+                    WindowCompat.getInsetsController(window, decorView);
+            if (insetsController != null) {
+                insetsController.setAppearanceLightStatusBars(!fullscreen);
+            }
+        }
+    }
+
+    private void reapplyFullscreenAfterRotation(final Activity activity) {
+        final Window window = activity.getWindow();
+        if (window == null) {
+            return;
+        }
+
+        final View decorView = window.getDecorView();
+        if (decorView == null) {
+            return;
+        }
+
+        decorView.post(new Runnable() {
+            @Override
+            public void run() {
+                setFullscreen(activity, forceFullscreen);
+            }
+        });
+
+        decorView.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                setFullscreen(activity, forceFullscreen);
+            }
+        }, 250);
+    }
+
+    private void consumeInsetsForFullscreen(Activity activity, boolean fullscreen) {
+        final View webViewView = (webView != null) ? webView.getView() : null;
+        if (webViewView == null) {
+            return;
+        }
+
+        if (fullscreen) {
+            webViewView.setFitsSystemWindows(false);
+            webViewView.setPadding(0, 0, 0, 0);
+            ViewCompat.setOnApplyWindowInsetsListener(webViewView, new OnApplyWindowInsetsListener() {
+                @Override
+                public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
+                    if (forceFullscreen) {
+                        v.setPadding(0, 0, 0, 0);
+                        return WindowInsetsCompat.CONSUMED;
+                    }
+                    return insets;
+                }
+            });
+        } else {
+            ViewCompat.setOnApplyWindowInsetsListener(webViewView, null);
+        }
+
+        ViewCompat.requestApplyInsets(webViewView);
+
+        // 同时对根容器也做 Insets 消费
+        View rootView = activity.getWindow().getDecorView().findViewById(android.R.id.content);
+        if (rootView != null) {
+            rootView.setFitsSystemWindows(false);
+            rootView.setPadding(0, 0, 0, 0);
+            if (fullscreen) {
+                ViewCompat.setOnApplyWindowInsetsListener(rootView, new OnApplyWindowInsetsListener() {
+                    @Override
+                    public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
+                        if (forceFullscreen) {
+                            v.setPadding(0, 0, 0, 0);
+                            return WindowInsetsCompat.CONSUMED;
+                        }
+                        return insets;
+                    }
+                });
+            } else {
+                ViewCompat.setOnApplyWindowInsetsListener(rootView, null);
+            }
+            ViewCompat.requestApplyInsets(rootView);
+        }
+    }
+
+    private void setStatusBarViewVisible(boolean visible) {
+        Activity activity = cordova.getActivity();
+        if (activity == null) return;
         
-        
+        View root = activity.getWindow().getDecorView();
+        if (root == null) return;
+
+        View statusBarView = root.findViewWithTag("statusBarView");
+        if (statusBarView == null) return;
+
+        statusBarView.setVisibility(visible ? View.VISIBLE : View.GONE);
+
+        View parent = (statusBarView.getParent() instanceof View) ? (View) statusBarView.getParent() : null;
+        if (parent != null) {
+            parent.requestApplyInsets();
+        }
     }
 }

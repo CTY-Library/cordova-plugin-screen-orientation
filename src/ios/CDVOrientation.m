@@ -28,6 +28,44 @@
 
 @implementation CDVOrientation
 
+- (BOOL)applySupportedOrientations:(CDVViewController*)vc
+                            result:(NSMutableArray*)result
+                          selector:(SEL)selector
+{
+    if ([vc respondsToSelector:selector]) {
+        ((void (*)(CDVViewController*, SEL, NSMutableArray*))objc_msgSend)(vc, selector, result);
+        return YES;
+    }
+
+    // Fallback for Cordova iOS variants that no longer expose setSupportedOrientations:.
+    @try {
+        [vc setValue:result forKey:@"supportedOrientations"];
+        return YES;
+    } @catch (NSException *exception) {
+        NSLog(@"CDVOrientation: unable to update supported orientations (%@)", exception.reason);
+        return NO;
+    }
+}
+
+- (UIWindowScene*)activeWindowScene API_AVAILABLE(ios(13.0))
+{
+    NSSet<UIScene*> *scenes = [UIApplication.sharedApplication connectedScenes];
+    for (UIScene *scene in scenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]
+                && scene.activationState == UISceneActivationStateForegroundActive) {
+            return (UIWindowScene*)scene;
+        }
+    }
+
+    for (UIScene *scene in scenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            return (UIWindowScene*)scene;
+        }
+    }
+
+    return nil;
+}
+
 
 -(void)handleBelowEqualIos15WithOrientationMask:(NSInteger) orientationMask viewController: (CDVViewController*) vc result:(NSMutableArray*) result selector:(SEL) selector
 {
@@ -49,13 +87,14 @@
     } else {
         if (_lastOrientation != UIInterfaceOrientationUnknown) {
             [[UIDevice currentDevice] setValue:[NSNumber numberWithInt:_lastOrientation] forKey:@"orientation"];
-            ((void (*)(CDVViewController*, SEL, NSMutableArray*))objc_msgSend)(vc,selector,result);
+            [self applySupportedOrientations:vc result:result selector:selector];
             [UINavigationController attemptRotationToDeviceOrientation];
         }
     }
     if (value != nil) {
         _isLocked = true;
         [[UIDevice currentDevice] setValue:value forKey:@"orientation"];
+        [UIViewController attemptRotationToDeviceOrientation];
     } else {
         _isLocked = false;
     }
@@ -84,14 +123,18 @@
             value = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortraitUpsideDown];
         }
     } else {
-        ((void (*)(CDVViewController*, SEL, NSMutableArray*))objc_msgSend)(vc,selector,result);
+        [self applySupportedOrientations:vc result:result selector:selector];
     }
     if (value != nil) {
         _isLocked = true;
-        UIWindowScene *scene = (UIWindowScene*)[[UIApplication.sharedApplication connectedScenes] anyObject];
-        [scene requestGeometryUpdateWithPreferences:(UIWindowSceneGeometryPreferencesIOS*)value errorHandler:^(NSError * _Nonnull error) {
-            NSLog(@"Failed to change orientation  %@ %@", error, [error userInfo]);
-        }];
+        UIWindowScene *scene = [self activeWindowScene];
+        if (scene != nil) {
+            [scene requestGeometryUpdateWithPreferences:(UIWindowSceneGeometryPreferencesIOS*)value errorHandler:^(NSError * _Nonnull error) {
+                NSLog(@"Failed to change orientation  %@ %@", error, [error userInfo]);
+            }];
+        } else {
+            NSLog(@"Failed to change orientation: no active UIWindowScene found");
+        }
     } else {
         _isLocked = false;
     }
@@ -121,42 +164,44 @@
 
 -(void)screenOrientation:(CDVInvokedUrlCommand *)command
 {
-    CDVPluginResult* pluginResult;
-    NSInteger orientationMask = [[command argumentAtIndex:0] integerValue];
-    CDVViewController* vc = (CDVViewController*)self.viewController;
-    NSMutableArray* result = [[NSMutableArray alloc] init];
-    
-    if(orientationMask & 1) {
-        [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationPortrait]];
-    }
-    if(orientationMask & 2) {
-        [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationPortraitUpsideDown]];
-    }
-    if(orientationMask & 4) {
-        [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationLandscapeRight]];
-    }
-    if(orientationMask & 8) {
-        [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationLandscapeLeft]];
-    }
-    SEL selector = NSSelectorFromString(@"setSupportedOrientations:");
-    
-    if([vc respondsToSelector:selector]) {
+    __weak CDVOrientation *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CDVOrientation *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+
+        CDVPluginResult* pluginResult;
+        NSInteger orientationMask = [[command argumentAtIndex:0] integerValue];
+        CDVViewController* vc = (CDVViewController*)strongSelf.viewController;
+        NSMutableArray* result = [[NSMutableArray alloc] init];
+
+        if(orientationMask & 1) {
+            [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationPortrait]];
+        }
+        if(orientationMask & 2) {
+            [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationPortraitUpsideDown]];
+        }
+        if(orientationMask & 4) {
+            [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationLandscapeRight]];
+        }
+        if(orientationMask & 8) {
+            [result addObject:[NSNumber numberWithInt:UIInterfaceOrientationLandscapeLeft]];
+        }
+        SEL selector = NSSelectorFromString(@"setSupportedOrientations:");
+
         if (orientationMask != 15 || [UIDevice currentDevice] == nil) {
-            ((void (*)(CDVViewController*, SEL, NSMutableArray*))objc_msgSend)(vc,selector,result);
+            [strongSelf applySupportedOrientations:vc result:result selector:selector];
         }
 
         if ([UIDevice currentDevice] != nil){
-            [self handleWithOrientationMask:orientationMask viewController:vc result:result selector:selector];
+            [strongSelf handleWithOrientationMask:orientationMask viewController:vc result:result selector:selector];
         }
-        
+
         pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
-    }
-    else {
-        pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_INVALID_ACTION messageAsString:@"Error calling to set supported orientations"];
-    }
-    
-    [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-    
+
+        [strongSelf.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    });
 }
 
 @end
