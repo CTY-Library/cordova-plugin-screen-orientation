@@ -166,6 +166,13 @@ public class CDVOrientation extends CordovaPlugin {
                 uiOptions |= View.SYSTEM_UI_FLAG_FULLSCREEN;
                 uiOptions |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
                 decorView.setSystemUiVisibility(uiOptions);
+                
+                // 全屏时设置背景透明，避免导航栏区域显示白色
+                decorView.setBackgroundColor(Color.TRANSPARENT);
+                View rootViewFullscreen = window.getDecorView().findViewById(android.R.id.content);
+                if (rootViewFullscreen != null) {
+                    rootViewFullscreen.setBackgroundColor(Color.TRANSPARENT);
+                }
             } else {
                 // 非全屏模式：状态栏可见，但内容延伸到顶部
                 window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
@@ -251,6 +258,7 @@ public class CDVOrientation extends CordovaPlugin {
             // 全屏时强制消费所有 insets，让内容进入系统栏区域
             webViewView.setFitsSystemWindows(false);
             webViewView.setPadding(0, 0, 0, 0);
+            webViewView.setBackgroundColor(Color.TRANSPARENT);
             ViewCompat.setOnApplyWindowInsetsListener(webViewView, new OnApplyWindowInsetsListener() {
                 @Override
                 public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
@@ -265,6 +273,7 @@ public class CDVOrientation extends CordovaPlugin {
             if (rootView != null) {
                 rootView.setFitsSystemWindows(false);
                 rootView.setPadding(0, 0, 0, 0);
+                rootView.setBackgroundColor(Color.TRANSPARENT);
                 ViewCompat.setOnApplyWindowInsetsListener(rootView, new OnApplyWindowInsetsListener() {
                     @Override
                     public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
