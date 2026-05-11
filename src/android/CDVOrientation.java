@@ -89,25 +89,25 @@ public class CDVOrientation extends CordovaPlugin {
 
         if (orientation.equals(ANY)) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
-            shouldFullscreen = true;
+            shouldFullscreen = false;
         } else if (orientation.equals(LANDSCAPE_PRIMARY)) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
             shouldFullscreen = true;
         } else if (orientation.equals(PORTRAIT_PRIMARY)) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
-            shouldFullscreen = true;
+            shouldFullscreen = false;
         } else if (orientation.equals(LANDSCAPE)) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
             shouldFullscreen = true;
         } else if (orientation.equals(PORTRAIT)) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
-            shouldFullscreen = true;
+            shouldFullscreen = false;
         } else if (orientation.equals(LANDSCAPE_SECONDARY)) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
             shouldFullscreen = true;
         } else if (orientation.equals(PORTRAIT_SECONDARY)) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
-            shouldFullscreen = true;
+            shouldFullscreen = false;
         } else {
             callbackContext.error("orientation not recognised");
             return false;
@@ -134,7 +134,6 @@ public class CDVOrientation extends CordovaPlugin {
         }
 
         final View decorView = window.getDecorView();
-        int uiOptions = (decorView != null) ? decorView.getSystemUiVisibility() : 0;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
@@ -142,8 +141,9 @@ public class CDVOrientation extends CordovaPlugin {
 
             if (fullscreen) {
                 // 全屏模式：内容进入状态栏/刘海区域
+                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                 window.setStatusBarColor(Color.TRANSPARENT);
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
                 WindowCompat.setDecorFitsSystemWindows(window, false);
                 setStatusBarViewVisible(false);
 
@@ -156,20 +156,23 @@ public class CDVOrientation extends CordovaPlugin {
                         Log.w("CDVOrientation", "Failed to set layoutInDisplayCutoutMode", e);
                     }
                 }
-                
-                // 隐藏导航栏
-                uiOptions |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-            } else {
-                // 非全屏模式：内容回到状态栏下方
-                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-                WindowCompat.setDecorFitsSystemWindows(window, true);
-                setStatusBarViewVisible(true);
 
-                window.setStatusBarColor(Color.BLACK);
+                // 应用完整的沉浸式 UI flag
+                int uiOptions = decorView.getSystemUiVisibility();
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+                uiOptions |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                uiOptions |= View.SYSTEM_UI_FLAG_FULLSCREEN;
+                uiOptions |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                decorView.setSystemUiVisibility(uiOptions);
+            } else {
+                // 非全屏模式：状态栏可见，但内容延伸到顶部
+                window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+                window.setStatusBarColor(Color.TRANSPARENT);
+                WindowCompat.setDecorFitsSystemWindows(window, false);
+                setStatusBarViewVisible(false);
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     try {
@@ -180,20 +183,31 @@ public class CDVOrientation extends CordovaPlugin {
                         Log.w("CDVOrientation", "Failed to restore layoutInDisplayCutoutMode", e);
                     }
                 }
-            }
-        }
 
-        if (decorView != null) {
-            decorView.setSystemUiVisibility(uiOptions);
+                // 保留布局进入状态栏区域，但不隐藏系统栏
+                int uiOptions = decorView.getSystemUiVisibility();
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
+                uiOptions &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                decorView.setSystemUiVisibility(uiOptions);
+            }
         }
 
         consumeInsetsForFullscreen(activity, fullscreen);
 
-        // 处理状态栏文字颜色
+        // 控制状态栏显隐与文字颜色
         if (Build.VERSION.SDK_INT >= 30 && decorView != null) {
             final WindowInsetsControllerCompat insetsController =
                     WindowCompat.getInsetsController(window, decorView);
             if (insetsController != null) {
+                if (fullscreen) {
+                    insetsController.hide(WindowInsetsCompat.Type.statusBars());
+                } else {
+                    insetsController.show(WindowInsetsCompat.Type.statusBars());
+                }
                 insetsController.setAppearanceLightStatusBars(!fullscreen);
             }
         }
@@ -231,7 +245,10 @@ public class CDVOrientation extends CordovaPlugin {
             return;
         }
 
+        View rootView = activity.getWindow().getDecorView().findViewById(android.R.id.content);
+
         if (fullscreen) {
+            // 全屏时强制消费所有 insets，让内容进入系统栏区域
             webViewView.setFitsSystemWindows(false);
             webViewView.setPadding(0, 0, 0, 0);
             ViewCompat.setOnApplyWindowInsetsListener(webViewView, new OnApplyWindowInsetsListener() {
@@ -244,18 +261,10 @@ public class CDVOrientation extends CordovaPlugin {
                     return insets;
                 }
             });
-        } else {
-            ViewCompat.setOnApplyWindowInsetsListener(webViewView, null);
-        }
 
-        ViewCompat.requestApplyInsets(webViewView);
-
-        // 同时对根容器也做 Insets 消费
-        View rootView = activity.getWindow().getDecorView().findViewById(android.R.id.content);
-        if (rootView != null) {
-            rootView.setFitsSystemWindows(false);
-            rootView.setPadding(0, 0, 0, 0);
-            if (fullscreen) {
+            if (rootView != null) {
+                rootView.setFitsSystemWindows(false);
+                rootView.setPadding(0, 0, 0, 0);
                 ViewCompat.setOnApplyWindowInsetsListener(rootView, new OnApplyWindowInsetsListener() {
                     @Override
                     public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
@@ -266,10 +275,37 @@ public class CDVOrientation extends CordovaPlugin {
                         return insets;
                     }
                 });
-            } else {
+            }
+        } else {
+            // 非全屏时保留状态栏可见，但不吃顶部 inset，内容顶到顶部
+            webViewView.setFitsSystemWindows(false);
+            ViewCompat.setOnApplyWindowInsetsListener(webViewView, new OnApplyWindowInsetsListener() {
+                @Override
+                public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
+                    if (!forceFullscreen) {
+                        final int left = insets.getInsets(WindowInsetsCompat.Type.systemBars()).left;
+                        final int right = insets.getInsets(WindowInsetsCompat.Type.systemBars()).right;
+                        final int bottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom;
+                        v.setPadding(left, 0, right, bottom);
+                    }
+                    return insets;
+                }
+            });
+
+            if (rootView != null) {
+                rootView.setFitsSystemWindows(false);
+                rootView.setPadding(0, 0, 0, 0);
                 ViewCompat.setOnApplyWindowInsetsListener(rootView, null);
             }
+        }
+
+        ViewCompat.requestApplyInsets(webViewView);
+        if (rootView != null) {
             ViewCompat.requestApplyInsets(rootView);
+        }
+        webViewView.requestLayout();
+        if (rootView != null) {
+            rootView.requestLayout();
         }
     }
 
