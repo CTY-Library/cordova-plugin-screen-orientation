@@ -26,11 +26,13 @@ import org.apache.cordova.CordovaPlugin;
 
 import org.json.JSONArray;
 import org.json.JSONException;
+import java.util.Locale;
 
 import android.app.Activity;
 import android.os.Build;
 import android.content.pm.ActivityInfo;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.util.Log;
 import android.view.View;
 import android.view.Window;
@@ -57,6 +59,11 @@ public class CDVOrientation extends CordovaPlugin {
     private static final String PORTRAIT = "portrait";
     private static final String LANDSCAPE = "landscape";
     private boolean forceFullscreen;
+
+        private static final String[] MAINLAND_OEM_TOKENS = new String[] {
+            "oppo", "oneplus", "realme", "vivo", "iqoo",
+            "xiaomi", "redmi", "huawei", "honor", "meizu"
+        };
     
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -136,88 +143,126 @@ public class CDVOrientation extends CordovaPlugin {
         final View decorView = window.getDecorView();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            final boolean useMainlandFallback = fullscreen && shouldUseMainlandCompatibilityFallback();
             window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
-            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
 
             if (fullscreen) {
-                // 全屏模式：内容进入状态栏/刘海区域
+                // 横屏全屏：默认四边铺满；大陆 ROM 命中降级策略时转为兼容模式
                 window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                window.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
-                window.setStatusBarColor(Color.TRANSPARENT);
+                final int fullscreenBgColor = Color.TRANSPARENT;
+                window.setBackgroundDrawable(new ColorDrawable(fullscreenBgColor));
+                window.setStatusBarColor(fullscreenBgColor);
+                window.setNavigationBarColor(fullscreenBgColor);
                 WindowCompat.setDecorFitsSystemWindows(window, false);
-                setStatusBarViewVisible(false);
+
+                // 强制禁用对比度保护
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        window.setStatusBarContrastEnforced(false);
+                        window.setNavigationBarContrastEnforced(false);
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to disable contrast enforcement", e);
+                    }
+                }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     try {
                         WindowManager.LayoutParams lp = window.getAttributes();
-                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                        lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
                         window.setAttributes(lp);
                     } catch (Exception e) {
-                        Log.w("CDVOrientation", "Failed to set layoutInDisplayCutoutMode", e);
+                        Log.w(TAG, "Failed to set layoutInDisplayCutoutMode", e);
                     }
                 }
 
-                // 应用完整的沉浸式 UI flag
-                int uiOptions = decorView.getSystemUiVisibility();
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
-                uiOptions |= View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-                uiOptions |= View.SYSTEM_UI_FLAG_FULLSCREEN;
-                uiOptions |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                // 激进的沉浸式：HIDE_NAVIGATION + FULLSCREEN + IMMERSIVE_STICKY
+                int uiOptions = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
                 decorView.setSystemUiVisibility(uiOptions);
-                
-                // 全屏时设置背景透明，避免导航栏区域显示白色
-                decorView.setBackgroundColor(Color.TRANSPARENT);
+
+                // 当系统栏被 ROM 或手势拉出时，立即重新隐藏虚拟按键
+                decorView.setOnSystemUiVisibilityChangeListener(new View.OnSystemUiVisibilityChangeListener() {
+                    @Override
+                    public void onSystemUiVisibilityChange(int visibility) {
+                        if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0 ||
+                                (visibility & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0) {
+                            hideNavigationBar(decorView);
+                        }
+                    }
+                });
+
+                // API 30+ 也下发 WindowInsetsController 隐藏
+                if (Build.VERSION.SDK_INT >= 30) {
+                    final WindowInsetsControllerCompat insetsController =
+                            WindowCompat.getInsetsController(window, decorView);
+                    if (insetsController != null) {
+                        insetsController.setSystemBarsBehavior(
+                                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                        insetsController.hide(WindowInsetsCompat.Type.systemBars());
+                    }
+                }
+
+                decorView.setBackgroundColor(fullscreenBgColor);
                 View rootViewFullscreen = window.getDecorView().findViewById(android.R.id.content);
                 if (rootViewFullscreen != null) {
-                    rootViewFullscreen.setBackgroundColor(Color.TRANSPARENT);
+                    rootViewFullscreen.setBackgroundColor(fullscreenBgColor);
                 }
             } else {
-                // 非全屏模式：状态栏可见，但内容延伸到顶部
+                // 非全屏时使用 DRAWS_SYSTEM_BAR_BACKGROUNDS + 透明系统栏
+                window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
                 window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                 window.setStatusBarColor(Color.TRANSPARENT);
+                window.setNavigationBarColor(Color.TRANSPARENT);
                 WindowCompat.setDecorFitsSystemWindows(window, false);
-                setStatusBarViewVisible(false);
+                decorView.setOnSystemUiVisibilityChangeListener(null);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    window.setStatusBarContrastEnforced(false);
+                    window.setNavigationBarContrastEnforced(false);
+                }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    window.setNavigationBarDividerColor(Color.TRANSPARENT);
                     try {
                         WindowManager.LayoutParams lp = window.getAttributes();
                         lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
                         window.setAttributes(lp);
                     } catch (Exception e) {
-                        Log.w("CDVOrientation", "Failed to restore layoutInDisplayCutoutMode", e);
+                        Log.w(TAG, "Failed to restore layoutInDisplayCutoutMode", e);
                     }
                 }
 
-                // 保留布局进入状态栏区域，但不隐藏系统栏
-                int uiOptions = decorView.getSystemUiVisibility();
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                uiOptions |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
-                uiOptions &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-                decorView.setSystemUiVisibility(uiOptions);
-            }
-        }
+                if (Build.VERSION.SDK_INT >= 30) {
+                    // 清理全屏残留 flag，恢复系统栏
+                    int uiOptions = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                    decorView.setSystemUiVisibility(uiOptions);
 
-        consumeInsetsForFullscreen(activity, fullscreen);
-
-        // 控制状态栏显隐与文字颜色
-        if (Build.VERSION.SDK_INT >= 30 && decorView != null) {
-            final WindowInsetsControllerCompat insetsController =
-                    WindowCompat.getInsetsController(window, decorView);
-            if (insetsController != null) {
-                if (fullscreen) {
-                    insetsController.hide(WindowInsetsCompat.Type.statusBars());
+                    final WindowInsetsControllerCompat insetsController =
+                            WindowCompat.getInsetsController(window, decorView);
+                    if (insetsController != null) {
+                        insetsController.show(WindowInsetsCompat.Type.systemBars());
+                        insetsController.setAppearanceLightStatusBars(true);
+                    }
                 } else {
-                    insetsController.show(WindowInsetsCompat.Type.statusBars());
+                    int uiOptions = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                    decorView.setSystemUiVisibility(uiOptions);
                 }
-                insetsController.setAppearanceLightStatusBars(!fullscreen);
             }
         }
+
+        consumeInsetsForFullscreen(activity, fullscreen, fullscreen && shouldUseMainlandCompatibilityFallback());
     }
 
     private void reapplyFullscreenAfterRotation(final Activity activity) {
@@ -235,6 +280,10 @@ public class CDVOrientation extends CordovaPlugin {
             @Override
             public void run() {
                 setFullscreen(activity, forceFullscreen);
+                // 如果是全屏，立即再次隐藏虚拟导航栏以确保生效
+                if (forceFullscreen) {
+                    hideNavigationBar(decorView);
+                }
             }
         });
 
@@ -242,11 +291,33 @@ public class CDVOrientation extends CordovaPlugin {
             @Override
             public void run() {
                 setFullscreen(activity, forceFullscreen);
+                if (forceFullscreen) {
+                    hideNavigationBar(decorView);
+                }
             }
         }, 250);
+
+        decorView.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (forceFullscreen) {
+                    hideNavigationBar(decorView);
+                }
+            }
+        }, 500);
     }
 
-    private void consumeInsetsForFullscreen(Activity activity, boolean fullscreen) {
+    private void hideNavigationBar(View decorView) {
+        int uiOptions = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+        decorView.setSystemUiVisibility(uiOptions);
+    }
+
+    private void consumeInsetsForFullscreen(Activity activity, boolean fullscreen, boolean useMainlandFallback) {
         final View webViewView = (webView != null) ? webView.getView() : null;
         if (webViewView == null) {
             return;
@@ -255,35 +326,32 @@ public class CDVOrientation extends CordovaPlugin {
         View rootView = activity.getWindow().getDecorView().findViewById(android.R.id.content);
 
         if (fullscreen) {
-            // 全屏时强制消费所有 insets，让内容进入系统栏区域
+            // 兼容模式下把左右安全区转为上下黑边；其他机型保持四边铺满
             webViewView.setFitsSystemWindows(false);
+            webViewView.setBackgroundColor(useMainlandFallback ? Color.BLACK : Color.TRANSPARENT);
             webViewView.setPadding(0, 0, 0, 0);
-            webViewView.setBackgroundColor(Color.TRANSPARENT);
             ViewCompat.setOnApplyWindowInsetsListener(webViewView, new OnApplyWindowInsetsListener() {
                 @Override
                 public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
-                    if (forceFullscreen) {
+                    if (useMainlandFallback) {
+                        final androidx.core.graphics.Insets barsInsets =
+                                insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+                        final int sideInset = Math.max(barsInsets.left, barsInsets.right);
+                        final int verticalInset = sideInset;
+                        v.setPadding(0, verticalInset, 0, verticalInset);
+                    } else {
                         v.setPadding(0, 0, 0, 0);
-                        return WindowInsetsCompat.CONSUMED;
                     }
-                    return insets;
+                    return WindowInsetsCompat.CONSUMED;
                 }
             });
 
             if (rootView != null) {
                 rootView.setFitsSystemWindows(false);
+                rootView.setBackgroundColor(useMainlandFallback ? Color.BLACK : Color.TRANSPARENT);
                 rootView.setPadding(0, 0, 0, 0);
-                rootView.setBackgroundColor(Color.TRANSPARENT);
-                ViewCompat.setOnApplyWindowInsetsListener(rootView, new OnApplyWindowInsetsListener() {
-                    @Override
-                    public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
-                        if (forceFullscreen) {
-                            v.setPadding(0, 0, 0, 0);
-                            return WindowInsetsCompat.CONSUMED;
-                        }
-                        return insets;
-                    }
-                });
+                // 避免 root + webView 双层补边导致画面二次缩小
+                ViewCompat.setOnApplyWindowInsetsListener(rootView, null);
             }
         } else {
             // 非全屏时保留状态栏可见，但不吃顶部 inset，内容顶到顶部
@@ -316,6 +384,24 @@ public class CDVOrientation extends CordovaPlugin {
         if (rootView != null) {
             rootView.requestLayout();
         }
+    }
+
+    private boolean shouldUseMainlandCompatibilityFallback() {
+        final String manufacturer = Build.MANUFACTURER != null
+                ? Build.MANUFACTURER.toLowerCase(Locale.ROOT)
+                : "";
+        final String brand = Build.BRAND != null
+                ? Build.BRAND.toLowerCase(Locale.ROOT)
+                : "";
+
+        for (String token : MAINLAND_OEM_TOKENS) {
+            if (manufacturer.contains(token) || brand.contains(token)) {
+                Log.w(TAG, "Enable mainland fullscreen fallback for OEM: " + manufacturer + "/" + brand);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void setStatusBarViewVisible(boolean visible) {
