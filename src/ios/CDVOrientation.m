@@ -75,10 +75,11 @@
             _lastOrientation = [UIApplication sharedApplication].statusBarOrientation;
         }
         UIInterfaceOrientation deviceOrientation = [UIApplication sharedApplication].statusBarOrientation;
-        if(orientationMask == 8  || (orientationMask == 12  && !UIInterfaceOrientationIsLandscape(deviceOrientation))) {
-            value = [NSNumber numberWithInt:UIInterfaceOrientationLandscapeLeft];
-        } else if (orientationMask == 4){
+        // Prefer clockwise rotation (LandscapeRight) when moving from portrait to landscape
+        if(orientationMask == 4 || (orientationMask == 12  && !UIInterfaceOrientationIsLandscape(deviceOrientation))) {
             value = [NSNumber numberWithInt:UIInterfaceOrientationLandscapeRight];
+        } else if (orientationMask == 8){
+            value = [NSNumber numberWithInt:UIInterfaceOrientationLandscapeLeft];
         } else if (orientationMask == 1 || (orientationMask == 3 && !UIInterfaceOrientationIsPortrait(deviceOrientation))) {
             value = [NSNumber numberWithInt:UIInterfaceOrientationPortrait];
         } else if (orientationMask == 2) {
@@ -113,10 +114,11 @@
             _lastOrientation = [UIApplication sharedApplication].statusBarOrientation;
         }
         UIInterfaceOrientation deviceOrientation = [UIApplication sharedApplication].statusBarOrientation;
-        if(orientationMask == 8  || (orientationMask == 12  && !UIInterfaceOrientationIsLandscape(deviceOrientation))) {
-            value = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscapeLeft];
-        } else if (orientationMask == 4){
+        // Prefer clockwise rotation (LandscapeRight) when moving from portrait to landscape
+        if(orientationMask == 4 || (orientationMask == 12  && !UIInterfaceOrientationIsLandscape(deviceOrientation))) {
             value = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscapeRight];
+        } else if (orientationMask == 8){
+            value = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscapeLeft];
         } else if (orientationMask == 1 || (orientationMask == 3 && !UIInterfaceOrientationIsPortrait(deviceOrientation))) {
             value = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
         } else if (orientationMask == 2) {
