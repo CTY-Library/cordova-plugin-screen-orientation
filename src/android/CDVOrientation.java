@@ -30,11 +30,14 @@ import java.util.Locale;
 
 import android.app.Activity;
 import android.os.Build;
+import android.content.res.Configuration;
 import android.content.pm.ActivityInfo;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import androidx.core.view.OnApplyWindowInsetsListener;
@@ -59,6 +62,7 @@ public class CDVOrientation extends CordovaPlugin {
     private static final String PORTRAIT = "portrait";
     private static final String LANDSCAPE = "landscape";
     private boolean forceFullscreen;
+    private boolean fullscreenLandscapeDebugLogged;
 
         private static final String[] MAINLAND_OEM_TOKENS = new String[] {
             "oppo", "oneplus", "realme", "vivo", "iqoo",
@@ -140,10 +144,16 @@ public class CDVOrientation extends CordovaPlugin {
             return;
         }
 
+        if (!fullscreen || !isLandscape(activity)) {
+            fullscreenLandscapeDebugLogged = false;
+        }
+
         final View decorView = window.getDecorView();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            final boolean useMainlandFallback = fullscreen && shouldUseMainlandCompatibilityFallback();
+            // Disable OEM fallback in fullscreen. It intentionally adds black letterboxing
+            // (top/bottom padding from side insets), which is exactly the observed notch black block.
+            final boolean useMainlandFallback = false;
             window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
             window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
 
@@ -215,6 +225,8 @@ public class CDVOrientation extends CordovaPlugin {
                 if (rootViewFullscreen != null) {
                     rootViewFullscreen.setBackgroundColor(fullscreenBgColor);
                 }
+                setStatusBarViewVisible(false);
+                logFullscreenLandscapeDebugOnce(activity, "setFullscreen");
             } else {
                 // 非全屏时使用 DRAWS_SYSTEM_BAR_BACKGROUNDS + 透明系统栏
                 window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
@@ -259,10 +271,12 @@ public class CDVOrientation extends CordovaPlugin {
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
                     decorView.setSystemUiVisibility(uiOptions);
                 }
+                // Keep statusBarView hidden to avoid vendor-specific black placeholder overlay.
+                setStatusBarViewVisible(false);
             }
         }
 
-        consumeInsetsForFullscreen(activity, fullscreen, fullscreen && shouldUseMainlandCompatibilityFallback());
+        consumeInsetsForFullscreen(activity, fullscreen, false);
     }
 
     private void reapplyFullscreenAfterRotation(final Activity activity) {
@@ -283,6 +297,7 @@ public class CDVOrientation extends CordovaPlugin {
                 // 如果是全屏，立即再次隐藏虚拟导航栏以确保生效
                 if (forceFullscreen) {
                     hideNavigationBar(decorView);
+                    logFullscreenLandscapeDebugOnce(activity, "reapply-post");
                 }
             }
         });
@@ -293,6 +308,7 @@ public class CDVOrientation extends CordovaPlugin {
                 setFullscreen(activity, forceFullscreen);
                 if (forceFullscreen) {
                     hideNavigationBar(decorView);
+                    logFullscreenLandscapeDebugOnce(activity, "reapply-250ms");
                 }
             }
         }, 250);
@@ -302,6 +318,7 @@ public class CDVOrientation extends CordovaPlugin {
             public void run() {
                 if (forceFullscreen) {
                     hideNavigationBar(decorView);
+                    logFullscreenLandscapeDebugOnce(activity, "reapply-500ms");
                 }
             }
         }, 500);
@@ -326,32 +343,33 @@ public class CDVOrientation extends CordovaPlugin {
         View rootView = activity.getWindow().getDecorView().findViewById(android.R.id.content);
 
         if (fullscreen) {
-            // 兼容模式下把左右安全区转为上下黑边；其他机型保持四边铺满
+            // Fullscreen: keep edge-to-edge, do not apply OEM fallback letterboxing.
             webViewView.setFitsSystemWindows(false);
-            webViewView.setBackgroundColor(useMainlandFallback ? Color.BLACK : Color.TRANSPARENT);
+            webViewView.setBackgroundColor(Color.TRANSPARENT);
             webViewView.setPadding(0, 0, 0, 0);
+            clearViewMargins(webViewView);
             ViewCompat.setOnApplyWindowInsetsListener(webViewView, new OnApplyWindowInsetsListener() {
                 @Override
                 public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
-                    if (useMainlandFallback) {
-                        final androidx.core.graphics.Insets barsInsets =
-                                insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
-                        final int sideInset = Math.max(barsInsets.left, barsInsets.right);
-                        final int verticalInset = sideInset;
-                        v.setPadding(0, verticalInset, 0, verticalInset);
-                    } else {
-                        v.setPadding(0, 0, 0, 0);
-                    }
+                    v.setPadding(0, 0, 0, 0);
+                    clearViewMargins(v);
                     return WindowInsetsCompat.CONSUMED;
                 }
             });
 
             if (rootView != null) {
                 rootView.setFitsSystemWindows(false);
-                rootView.setBackgroundColor(useMainlandFallback ? Color.BLACK : Color.TRANSPARENT);
+                rootView.setBackgroundColor(Color.TRANSPARENT);
                 rootView.setPadding(0, 0, 0, 0);
-                // 避免 root + webView 双层补边导致画面二次缩小
-                ViewCompat.setOnApplyWindowInsetsListener(rootView, null);
+                clearViewMargins(rootView);
+                ViewCompat.setOnApplyWindowInsetsListener(rootView, new OnApplyWindowInsetsListener() {
+                    @Override
+                    public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
+                        v.setPadding(0, 0, 0, 0);
+                        clearViewMargins(v);
+                        return WindowInsetsCompat.CONSUMED;
+                    }
+                });
             }
         } else {
             // 非全屏时保留状态栏可见，但不吃顶部 inset，内容顶到顶部
@@ -361,9 +379,10 @@ public class CDVOrientation extends CordovaPlugin {
                 public WindowInsetsCompat onApplyWindowInsets(View v, WindowInsetsCompat insets) {
                     if (!forceFullscreen) {
                         final int left = insets.getInsets(WindowInsetsCompat.Type.systemBars()).left;
+                        final int top = insets.getInsets(WindowInsetsCompat.Type.systemBars()).top;
                         final int right = insets.getInsets(WindowInsetsCompat.Type.systemBars()).right;
                         final int bottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom;
-                        v.setPadding(left, 0, right, bottom);
+                        v.setPadding(left, top, right, bottom);
                     }
                     return insets;
                 }
@@ -386,6 +405,20 @@ public class CDVOrientation extends CordovaPlugin {
         }
     }
 
+    private void clearViewMargins(View view) {
+        if (view == null) {
+            return;
+        }
+        ViewGroup.LayoutParams lp = view.getLayoutParams();
+        if (lp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+            if (mlp.leftMargin != 0 || mlp.topMargin != 0 || mlp.rightMargin != 0 || mlp.bottomMargin != 0) {
+                mlp.setMargins(0, 0, 0, 0);
+                view.setLayoutParams(mlp);
+            }
+        }
+    }
+
     private boolean shouldUseMainlandCompatibilityFallback() {
         final String manufacturer = Build.MANUFACTURER != null
                 ? Build.MANUFACTURER.toLowerCase(Locale.ROOT)
@@ -402,6 +435,85 @@ public class CDVOrientation extends CordovaPlugin {
         }
 
         return false;
+    }
+
+    private boolean isLandscape(Activity activity) {
+        return activity != null
+                && activity.getResources() != null
+                && activity.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+    }
+
+    private void logFullscreenLandscapeDebugOnce(Activity activity, String stage) {
+        if (fullscreenLandscapeDebugLogged || activity == null || !forceFullscreen || !isLandscape(activity)) {
+            return;
+        }
+
+        final Window window = activity.getWindow();
+        if (window == null) {
+            return;
+        }
+
+        final View decor = window.getDecorView();
+        final View root = decor != null ? decor.findViewById(android.R.id.content) : null;
+        final View webViewView = (webView != null) ? webView.getView() : null;
+
+        final WindowInsetsCompat decorInsets = decor != null ? ViewCompat.getRootWindowInsets(decor) : null;
+        if (decorInsets == null) {
+            return;
+        }
+
+        fullscreenLandscapeDebugLogged = true;
+
+        Log.w(TAG, "[FS-LANDSCAPE-DEBUG] ===== begin stage=" + stage + " =====");
+        try {
+            WindowManager.LayoutParams lp = window.getAttributes();
+            Log.w(TAG, "[FS-LANDSCAPE-DEBUG] windowFlags=0x"
+                    + Integer.toHexString(lp.flags)
+                    + " cutoutMode=" + lp.layoutInDisplayCutoutMode
+                    + " decorFitsSystemWindows=false(expected)");
+        } catch (Exception e) {
+            Log.w(TAG, "[FS-LANDSCAPE-DEBUG] read window attributes failed", e);
+        }
+
+        logViewDebug("decor", decor);
+        logViewDebug("root", root);
+        logViewDebug("webview", webViewView);
+        Log.w(TAG, "[FS-LANDSCAPE-DEBUG] ===== end =====");
+    }
+
+    private void logViewDebug(String name, View view) {
+        if (view == null) {
+            Log.w(TAG, "[FS-LANDSCAPE-DEBUG] " + name + "=null");
+            return;
+        }
+
+        Rect visibleRect = new Rect();
+        boolean hasVisible = view.getGlobalVisibleRect(visibleRect);
+        int[] location = new int[] {0, 0};
+        view.getLocationOnScreen(location);
+
+        WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(view);
+        androidx.core.graphics.Insets sysInsets = insets != null
+                ? insets.getInsets(WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout())
+                : null;
+
+        ViewGroup.LayoutParams lp = view.getLayoutParams();
+        String marginInfo = "n/a";
+        if (lp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+            marginInfo = "l=" + mlp.leftMargin + ",t=" + mlp.topMargin + ",r=" + mlp.rightMargin + ",b=" + mlp.bottomMargin;
+        }
+
+        Log.w(TAG, "[FS-LANDSCAPE-DEBUG] " + name
+                + " vis=" + hasVisible + " rect=" + visibleRect.toShortString()
+                + " xy=" + location[0] + "," + location[1]
+                + " size=" + view.getWidth() + "x" + view.getHeight()
+                + " measured=" + view.getMeasuredWidth() + "x" + view.getMeasuredHeight()
+                + " padding=" + view.getPaddingLeft() + "," + view.getPaddingTop() + "," + view.getPaddingRight() + "," + view.getPaddingBottom()
+                + " margin=" + marginInfo
+                + " insets=" + (sysInsets == null ? "null" : (sysInsets.left + "," + sysInsets.top + "," + sysInsets.right + "," + sysInsets.bottom))
+                + " fitsSystemWindows=" + view.getFitsSystemWindows()
+                + " sysUi=0x" + Integer.toHexString(view.getSystemUiVisibility()));
     }
 
     private void setStatusBarViewVisible(boolean visible) {
